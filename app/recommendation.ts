@@ -98,6 +98,17 @@ export function randomCategory(ids:string[],previous:string,random=Math.random) 
   const options=ids.filter(id=>id!==previous);const pool=options.length?options:ids;
   return pool.length?pool[Math.floor(random()*pool.length)]:null;
 }
+export function nextDirection(ids:string[],previous:string,recent:string[],random=Math.random) {
+  const fresh=ids.filter(id=>id!==previous&&!recent.slice(-2).includes(id));
+  return randomCategory(fresh.length?fresh:ids,previous,random);
+}
+export function finalRestaurant(pool:Restaurant[],c:Constraints,now:Date,zone:string|null,skipped:string[]=[]) {
+  return pool.filter(r=>evaluate(r,c,now,zone).eligible&&!skipped.includes(categoryOf(r).id))
+    .sort((a,b)=>{
+      const score=(r:Restaurant)=>r.distance+(assessHours(r,c.mode,now,zone).status==='open'?0:1000)+(c.budget!==null&&r.price!==null&&r.price>c.budget?1500:0);
+      return score(a)-score(b);
+    })[0]??null;
+}
 export function pickRestaurant(pool:Restaurant[],c:Constraints,seen:string[],random=Math.random) {
   const remaining=pool.filter(r=>!seen.includes(r.id));
   if(!remaining.length)return null;
