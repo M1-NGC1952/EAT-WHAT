@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import { assessHours, evaluate, categoryOf, randomCategory, pickRestaurant, DEFAULTS } from '../app/recommendation.ts';
+const now=new Date('2026-10-26T07:25:00Z');
+const shop={id:'test',name:'测试面馆',cuisine:'noodle',latitude:31,longitude:121,distance:500,openingHours:'Mo-Su 10:00-15:30,17:00-22:00',hoursKind:'weekly',timeZone:'Asia/Shanghai',price:25,source:'OpenStreetMap',sourceUrl:'',checkedAt:now.toISOString(),address:'',coordinateSystem:'wgs84'};
+assert.equal(assessHours(shop,'dine',now).status,'closing');
+assert.equal(evaluate(shop,DEFAULTS,now).eligible,false);
+const at=(iso)=>({...shop,checkedAt:iso});
+assert.equal(assessHours(at('2026-10-26T04:00:00Z'),'dine',new Date('2026-10-26T04:00:00Z')).status,'open');
+assert.equal(assessHours(at('2026-10-26T08:00:00Z'),'dine',new Date('2026-10-26T08:00:00Z')).status,'closed');
+const night={...shop,openingHours:'Mo 22:00-02:00',checkedAt:'2026-10-26T17:00:00Z'};
+assert.equal(assessHours(night,'dine',new Date('2026-10-26T17:00:00Z')).status,'open');
+assert.equal(assessHours({...shop,openingHours:'Mo-Su 10:00-22:00; PH off'},'dine',now).status,'unknown');
+assert.equal(assessHours({...shop,openingHours:null},'dine',now).status,'unknown');
+assert.equal(assessHours({...shop,checkedAt:'2026-10-25T07:25:00Z'},'dine',now).status,'unknown');
+const allDay={...shop,openingHours:'24/7'};
+assert.equal(evaluate({...allDay,price:null},{...DEFAULTS,budget:30,strictBudget:true},now).eligible,false);
+assert.equal(evaluate({...allDay,price:40},{...DEFAULTS,budget:30,strictBudget:true},now).eligible,false);
+assert.equal(evaluate({...allDay,price:40},{...DEFAULTS,budget:30},now).eligible,true);
+assert.equal(evaluate(allDay,{...DEFAULTS,mode:'delivery'},now).eligible,false);
+assert.equal(evaluate(allDay,{...DEFAULTS,excluded:['noodles']},now).eligible,false);
+assert.equal(randomCategory(['rice','noodles'],'rice',()=>0),'noodles');
+assert.equal(pickRestaurant([allDay],DEFAULTS,['test']),null);
+assert.equal(categoryOf({...shop,cuisine:'中餐厅;火锅店',name:'一家火锅'}).id,'hotpot');
+console.log('PASS: closing, lunch break, overnight, unknown/stale hours, strict/soft budget, delivery, exclusions and no-repeat');
+

@@ -1,518 +1,157 @@
 "use client";
-
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { readJournal, saveJournalEntry, type LunchEntry } from "./journal-storage";
-
-type Coordinates = { latitude: number; longitude: number };
-type MealMode = "auto" | "dine" | "delivery";
-type LocationState = "idle" | "loading" | "ready" | "error";
-type WeatherState = "idle" | "loading" | "ready" | "error";
-
-type Weather = {
-  temperature: number;
-  apparentTemperature: number;
-  precipitation: number;
-  windSpeed: number;
-  weatherCode: number;
-  label: string;
-  icon: string;
-  recommendedMode: Exclude<MealMode, "auto">;
-  reason: string;
-};
-
-type Restaurant = {
-  id: string;
-  name: string;
-  cuisine: string;
-  distance: number;
-  delivery: boolean;
-  latitude: number | null;
-  longitude: number | null;
-};
-
-type Suggestion = {
-  restaurant: Restaurant;
-  dish: string;
-  mode: Exclude<MealMode, "auto">;
-  needsDeliveryCheck: boolean;
-};
-
-const fallbackRestaurants: Restaurant[] = [
-  { id: "sample-1", name: "巷口米饭铺", cuisine: "中式快餐", distance: 360, delivery: true, latitude: null, longitude: null },
-  { id: "sample-2", name: "今日面馆", cuisine: "面食", distance: 520, delivery: true, latitude: null, longitude: null },
-  { id: "sample-3", name: "绿碗轻食", cuisine: "轻食", distance: 680, delivery: true, latitude: null, longitude: null },
-  { id: "sample-4", name: "小熊咖喱", cuisine: "咖喱", distance: 740, delivery: false, latitude: null, longitude: null },
-  { id: "sample-5", name: "云朵馄饨", cuisine: "馄饨", distance: 890, delivery: false, latitude: null, longitude: null },
-  { id: "sample-6", name: "滚烫麻辣烫", cuisine: "麻辣烫", distance: 1060, delivery: true, latitude: null, longitude: null },
-];
-
-const dishMap: Array<{ keys: string[]; dishes: string[] }> = [
-  { keys: ["noodle", "ramen", "面", "馄饨"], dishes: ["招牌牛肉面", "番茄鸡蛋面", "红油馄饨"] },
-  { keys: ["cafe", "coffee", "轻食", "salad"], dishes: ["鸡肉谷物碗", "牛油果三明治", "时蔬能量沙拉"] },
-  { keys: ["korean", "韩国"], dishes: ["石锅拌饭", "泡菜肥牛饭", "部队锅"] },
-  { keys: ["japanese", "sushi", "日本"], dishes: ["照烧鸡肉饭", "咖喱猪排饭", "寿喜烧牛肉饭"] },
-  { keys: ["pizza", "italian", "意式"], dishes: ["玛格丽特披萨", "番茄肉酱意面", "奶油蘑菇意面"] },
-  { keys: ["burger", "western", "西式"], dishes: ["经典牛肉汉堡", "烤鸡腿堡", "薯角套餐"] },
-  { keys: ["hot_pot", "麻辣烫", "火锅"], dishes: ["自选麻辣烫", "番茄冒菜", "麻酱拌菜"] },
-  { keys: ["curry", "咖喱"], dishes: ["咖喱鸡肉饭", "咖喱牛腩饭", "蔬菜咖喱饭"] },
-  { keys: ["chinese", "中式", "rice", "快餐"], dishes: ["招牌双拼饭", "番茄炒蛋饭", "小炒肉盖饭"] },
-];
-
-const defaultDishes = ["本店招牌饭", "今日限定套餐", "老板推荐单品"];
-
-function todayString() {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
-}
-
-function weatherDescription(code: number): { label: string; icon: string } {
-  if (code === 0) return { label: "晴朗", icon: "☀️" };
-  if ([1, 2].includes(code)) return { label: "晴间多云", icon: "🌤️" };
-  if (code === 3) return { label: "阴天", icon: "☁️" };
-  if ([45, 48].includes(code)) return { label: "有雾", icon: "🌫️" };
-  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return { label: "有雨", icon: "🌧️" };
-  if ((code >= 71 && code <= 77) || [85, 86].includes(code)) return { label: "有雪", icon: "🌨️" };
-  if (code >= 95) return { label: "雷雨", icon: "⛈️" };
-  return { label: "天气多变", icon: "🌥️" };
-}
-
-function modeFromWeather(current: Omit<Weather, "label" | "icon" | "recommendedMode" | "reason">) {
-  if (current.precipitation >= 0.3 || current.weatherCode >= 51) {
-    return { recommendedMode: "delivery" as const, reason: "外面有降水，今天少走几步更舒服" };
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { CATEGORIES, INSPIRATIONS, DEFAULTS, categoryOf, evaluate, mapLink, pickRestaurant, randomCategory, type Constraints, type Restaurant } from './recommendation';
+import { readJournal, saveJournalEntry, type LunchEntry } from './journal-storage';
+type Point={latitude:number;longitude:number;coordinateSystem?:string;label:string};
+type LocationResult=Point&{id:string|number;name:string;admin1?:string;country?:string;isCity?:boolean};
+const SETTINGS='shifanfou.preferences.v2',PLACE='shifanfou.place.v2';
+function today(){const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
+export default function LunchApp(){
+ const [tab,setTab]=useState<'choose'|'journal'>('choose');
+ const [direction,setDirection]=useState('noodles');
+ const [restaurantId,setRestaurantId]=useState<string|null>(null);
+ const [restaurants,setRestaurants]=useState<Restaurant[]>([]);
+ const [point,setPoint]=useState<Point|null>(null);
+ const [query,setQuery]=useState('');const [locations,setLocations]=useState<LocationResult[]>([]);
+ const [busy,setBusy]=useState(false),[searching,setSearching]=useState(false),[locating,setLocating]=useState(false);
+ const [message,setMessage]=useState(''),[note,setNote]=useState('');
+ const [constraints,setConstraints]=useState<Constraints>(DEFAULTS);
+ const [zone,setZone]=useState<string|null>(null),[weather,setWeather]=useState<{temperature_2m:number;precipitation:number}|null>(null);
+ const [weatherBusy,setWeatherBusy]=useState(false),[now,setNow]=useState(()=>new Date());
+ const [seen,setSeen]=useState<string[]>([]),[swaps,setSwaps]=useState(0),[confirmed,setConfirmed]=useState(false);
+ const [loaded,setLoaded]=useState(false);const requestId=useRef(0),searchId=useRef(0);const restored=useRef(false);
+ const [entries,setEntries]=useState<LunchEntry[]>([]),[journalMessage,setJournalMessage]=useState('');
+ const [form,setForm]=useState({eatenOn:today(),restaurant:'',dish:'',mealMode:'堂食',note:''});
+ const [coordText,setCoordText]=useState('');
+ const category=CATEGORIES.find(c=>c.id===direction)??{id:'none',name:'暂时没有可选方向',icon:'🥣',hint:'这轮品类都被避开了，可恢复偏好后继续随机。',words:[]};
+ const checks=useMemo(()=>restaurants.map(r=>({r,...evaluate(r,constraints,now,zone)})),[restaurants,constraints,now,zone]);
+ const eligible=checks.filter(x=>x.eligible).map(x=>x.r);
+ const signature=eligible.map(r=>r.id).join('|');
+ const current=eligible.find(r=>r.id===restaurantId&&categoryOf(r).id===direction)??null;
+ const currentStatus=current?evaluate(current,constraints,now,zone):null;
+ const matching=eligible.filter(r=>categoryOf(r).id===direction);
+ const isLoading=busy||locating;
+ useEffect(()=>{
+  setDirection(INSPIRATIONS[Math.floor(Math.random()*INSPIRATIONS.length)].id);
+  try{
+   const raw=JSON.parse(localStorage.getItem(SETTINGS)||'null');
+   if(raw&&Number.isFinite(raw.radius)&&[600,1200,2000,3000].includes(raw.radius)&&['dine','takeaway','delivery'].includes(raw.mode)){
+    setConstraints({...DEFAULTS,...raw,budget:typeof raw.budget==='number'&&raw.budget>0?Math.min(5000,raw.budget):null,excluded:Array.isArray(raw.excluded)?raw.excluded.filter((id:unknown)=>typeof id==='string'&&CATEGORIES.some(c=>c.id===id)):[]});
+   }
+   const p=JSON.parse(localStorage.getItem(PLACE)||'null');
+   if(p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180&&typeof p.label==='string')setPoint(p);
+  }catch{setNote('未能恢复偏好，你仍可以正常随机选择。');}
+  restored.current=true;setLoaded(true);
+  const timer=setInterval(()=>setNow(new Date()),30000);
+  const focus=()=>setNow(new Date());window.addEventListener('focus',focus);
+  return()=>{clearInterval(timer);window.removeEventListener('focus',focus);};
+ },[]);
+ useEffect(()=>{
+  if(!loaded)return;try{localStorage.setItem(SETTINGS,JSON.stringify({...constraints,excluded:[]}));}catch{setNote('浏览器未允许保存偏好，本次仍可正常使用。');}
+ },[constraints,loaded]);
+ async function loadNearby(p:Point,radius:number){
+  const id=++requestId.current;setBusy(true);setRestaurants([]);setRestaurantId(null);setConfirmed(false);setSeen([]);setWeather(null);setZone(null);setWeatherBusy(true);setMessage('正在找真实餐厅，营业和价格有缺失时会明确告诉你。');
+  const params=new URLSearchParams({lat:String(p.latitude),lon:String(p.longitude),radius:String(radius),system:p.coordinateSystem??'wgs84'});
+  void fetch(`/api/context?${params}&part=weather`,{signal:AbortSignal.timeout(11000)}).then(r=>r.json()).then(body=>{if(id===requestId.current){setWeather(body.weather??null);setZone(body.timeZone??null);}}).catch(()=>{}).finally(()=>{if(id===requestId.current)setWeatherBusy(false);});
+  try{
+   const response=await fetch(`/api/context?${params}`,{signal:AbortSignal.timeout(28000)});const body=await response.json();
+   if(id!==requestId.current)return;
+   if(!response.ok)throw Error(body.message||'餐饮服务暂不可用');
+   setRestaurants(body.restaurants??[]);setMessage(body.message||`找到了 ${body.restaurants?.length??0} 家真实餐厅。`);setNow(new Date());
+  }catch(error){if(id===requestId.current)setMessage(error instanceof Error&&error.name!=='TimeoutError'?error.message:'附近查询超时，请重试或打开地图。');}
+  finally{if(id===requestId.current)setBusy(false);}
+ }
+ useEffect(()=>{if(point&&loaded)void loadNearby(point,constraints.radius);},[point,constraints.radius,loaded]);
+ useEffect(()=>{
+  if(!eligible.length){
+   setRestaurantId(null);setConfirmed(false);
+   if(constraints.excluded.includes(direction)||direction==='none'){
+    const options=INSPIRATIONS.filter(c=>!constraints.excluded.includes(c.id)).map(c=>c.id);
+    setDirection(randomCategory(options,direction)??'none');
+   }
+   return;
   }
-  if (current.windSpeed >= 30) {
-    return { recommendedMode: "delivery" as const, reason: "风有点大，适合让午餐来找你" };
+  if(eligible.some(r=>r.id===restaurantId&&categoryOf(r).id===direction))return;
+  let pool=eligible.filter(r=>categoryOf(r).id===direction);
+  if(!pool.length){
+   const preferred=eligible.filter(r=>categoryOf(r).id===constraints.preferred);
+   pool=preferred.length?preferred:eligible;
+   if(point)setNote('已从附近符合条件的真实候选中，替你换了一个有商家支持的方向。');
   }
-  if (current.apparentTemperature <= 3 || current.apparentTemperature >= 35) {
-    return { recommendedMode: "delivery" as const, reason: "体感温度不太友好，推荐外卖" };
-  }
-  return { recommendedMode: "dine" as const, reason: "天气适合出门，顺便活动十几分钟" };
-}
-
-function dishForCuisine(cuisine: string, seed: number) {
-  const normalized = cuisine.toLowerCase();
-  const group = dishMap.find(({ keys }) => keys.some((key) => normalized.includes(key.toLowerCase())));
-  const dishes = group?.dishes ?? defaultDishes;
-  return dishes[seed % dishes.length];
-}
-
-function prettyDate(value: string) {
-  const date = new Date(`${value}T12:00:00`);
-  return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", weekday: "short" }).format(date);
-}
-
-export default function LunchApp() {
-  const [activeTab, setActiveTab] = useState<"choose" | "journal">("choose");
-  const [locationInput, setLocationInput] = useState("");
-  const [locationLabel, setLocationLabel] = useState("还没有设置午餐起点");
-  const [locationState, setLocationState] = useState<LocationState>("idle");
-  const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
-  const [locationMessage, setLocationMessage] = useState("先定位，我们只看步行 15 分钟左右的选择");
-  const [weather, setWeather] = useState<Weather | null>(null);
-  const [weatherState, setWeatherState] = useState<WeatherState>("idle");
-  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
-  const [dataSource, setDataSource] = useState<"osm" | "fallback" | null>(null);
-  const [mealMode, setMealMode] = useState<MealMode>("auto");
-  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
-  const [isRolling, setIsRolling] = useState(false);
-  const [journalEntries, setJournalEntries] = useState<LunchEntry[]>([]);
-  const [journalStatus, setJournalStatus] = useState<"idle" | "loading" | "saving">("idle");
-  const [journalMessage, setJournalMessage] = useState("");
-  const [form, setForm] = useState({
-    eatenOn: todayString(),
-    restaurant: "",
-    dish: "",
-    mealMode: "堂食",
-    note: "",
-  });
-
-  const effectiveMode = mealMode === "auto" ? weather?.recommendedMode ?? "dine" : mealMode;
-  const dineCount = restaurants.length;
-  const deliveryCount = restaurants.filter((restaurant) => restaurant.delivery).length;
-
-  const visibleRestaurants = useMemo(() => restaurants.slice(0, 8), [restaurants]);
-
-  useEffect(() => {
-    if (activeTab !== "journal") return;
-
-    const reload = () => {
-      try {
-        setJournalEntries(readJournal(window.localStorage));
-      } catch {
-        setJournalMessage("手账无法读取，请检查浏览器是否允许网站保存数据；不要清理已有网站数据。");
-      }
-    };
-    reload();
-    window.addEventListener("storage", reload);
-    return () => window.removeEventListener("storage", reload);
-  }, [activeTab]);
-
-  async function hydrateLocation(point: Coordinates, label: string) {
-    setLocationState("loading");
-    setCoordinates(point);
-    setLocationInput(label);
-    setLocationLabel(label);
-    setLocationMessage("正在看看附近有什么，也顺便问问天气");
-    setWeather(null);
-    setWeatherState("loading");
-    setSuggestion(null);
-    let didLoadWeather = false;
-
-    try {
-      const params = new URLSearchParams({ lat: String(point.latitude), lon: String(point.longitude) });
-      const response = await fetch(`/api/context?${params}`);
-      if (!response.ok) throw new Error("附近信息暂时忙");
-      const payload = (await response.json()) as {
-        weather?: {
-          temperature_2m?: number;
-          apparent_temperature?: number;
-          precipitation?: number;
-          weather_code?: number;
-          wind_speed_10m?: number;
-        } | null;
-        restaurants?: Restaurant[];
-      };
-      if (payload.weather) {
-        const base = {
-          temperature: payload.weather.temperature_2m ?? 22,
-          apparentTemperature: payload.weather.apparent_temperature ?? payload.weather.temperature_2m ?? 22,
-          precipitation: payload.weather.precipitation ?? 0,
-          windSpeed: payload.weather.wind_speed_10m ?? 0,
-          weatherCode: payload.weather.weather_code ?? 0,
-        };
-        const currentWeather = { ...base, ...weatherDescription(base.weatherCode), ...modeFromWeather(base) };
-        setWeather(currentWeather);
-        setWeatherState("ready");
-        didLoadWeather = true;
-        setForm((current) => ({ ...current, mealMode: currentWeather.recommendedMode === "dine" ? "堂食" : "外卖" }));
-      } else {
-        setWeather(null);
-        setWeatherState("error");
-      }
-      if ((payload.restaurants?.length ?? 0) >= 3) {
-        setRestaurants(payload.restaurants ?? []);
-        setDataSource("osm");
-      } else {
-        setRestaurants(fallbackRestaurants);
-        setDataSource("fallback");
-      }
-    } catch {
-      setWeather(null);
-      setWeatherState("error");
-      setRestaurants(fallbackRestaurants);
-      setDataSource("fallback");
-    }
-
-    setLocationState("ready");
-    setLocationMessage(
-      didLoadWeather
-        ? "午餐圈已准备好，现在只差按下那个按钮"
-        : "附近候选已准备好；天气暂时没取到，可以点天气卡重试",
-    );
-  }
-
-  function useMyLocation() {
-    if (!("geolocation" in navigator)) {
-      setLocationState("error");
-      setLocationMessage("浏览器不支持定位，请输入城市或区域名称");
-      return;
-    }
-
-    setLocationState("loading");
-    setLocationMessage("正在获取你的位置…");
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const point = {
-          latitude: Number(position.coords.latitude.toFixed(5)),
-          longitude: Number(position.coords.longitude.toFixed(5)),
-        };
-        const label = `当前位置 · ${point.latitude.toFixed(4)}, ${point.longitude.toFixed(4)}`;
-        void hydrateLocation(point, label);
-      },
-      () => {
-        setLocationState("error");
-        setLocationMessage("没有取得定位权限，也可以输入城市、商圈或邮编");
-      },
-      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 300_000 },
-    );
-  }
-
-  async function searchLocation(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const query = locationInput.trim();
-    if (query.length < 2) {
-      setLocationState("error");
-      setLocationMessage("请输入至少两个字的城市、区域或邮编");
-      return;
-    }
-
-    setLocationState("loading");
-    setLocationMessage("正在寻找这个午餐起点…");
-    try {
-      const params = new URLSearchParams({ q: query });
-      const response = await fetch(`/api/locations?${params}`);
-      if (!response.ok) throw new Error("地点搜索失败");
-      const payload = (await response.json()) as {
-        locations?: Array<{ name: string; admin1?: string; country?: string; latitude: number; longitude: number }>;
-      };
-      const result = payload.locations?.[0];
-      if (!result) throw new Error("没有找到这个地点");
-      const label = [result.name, result.admin1, result.country].filter(Boolean).join(" · ");
-      await hydrateLocation({ latitude: result.latitude, longitude: result.longitude }, label);
-    } catch (error) {
-      setLocationState("error");
-      setLocationMessage(error instanceof Error ? error.message : "地点搜索失败");
-    }
-  }
-
-  function chooseLunch() {
-    if (locationState !== "ready" || restaurants.length === 0 || isRolling) return;
-    setIsRolling(true);
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.setTimeout(() => {
-      const mode = effectiveMode;
-      const deliveryOptions = restaurants.filter((restaurant) => restaurant.delivery);
-      const options = mode === "delivery" && deliveryOptions.length >= 2 ? deliveryOptions : restaurants;
-      const seed = Date.now();
-      const restaurant = options[seed % options.length];
-      setSuggestion({
-        restaurant,
-        dish: dishForCuisine(restaurant.cuisine, seed),
-        mode,
-        needsDeliveryCheck: mode === "delivery" && !restaurant.delivery,
-      });
-      setIsRolling(false);
-    }, reduceMotion ? 0 : 620);
-  }
-
-  function putSuggestionInJournal() {
-    if (!suggestion) return;
-    setForm((current) => ({
-      ...current,
-      restaurant: suggestion.restaurant.name,
-      dish: suggestion.dish,
-      mealMode: suggestion.mode === "dine" ? "堂食" : "外卖",
-    }));
-    setActiveTab("journal");
-    setJournalMessage("");
-  }
-
-  async function saveJournal(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setJournalStatus("saving");
-    setJournalMessage("");
-    try {
-      const entries = saveJournalEntry(window.localStorage, {
-        ...form,
-        location: coordinates ? locationLabel : "",
-      });
-      setJournalEntries(entries);
-      setJournalMessage("记好了。未来的你会感谢这顿没有被忘掉的午餐。");
-      setForm((current) => ({ ...current, restaurant: "", dish: "", note: "" }));
-    } catch (error) {
-      setJournalMessage(error instanceof Error && error.message.startsWith("请填写") ? error.message : "没有保存成功，请检查浏览器存储空间和网站数据权限。");
-    } finally {
-      setJournalStatus("idle");
-    }
-  }
-
-  return (
-    <main>
-      <header className="topbar">
-        <a className="brand" href="#top" aria-label="今天吃什么首页">
-          <span className="brand-stamp" aria-hidden="true">吃</span>
-          <span>今天吃什么</span>
-        </a>
-        <nav className="tabs" aria-label="主要导航">
-          <button className={activeTab === "choose" ? "active" : ""} onClick={() => setActiveTab("choose")}>帮我选</button>
-          <button className={activeTab === "journal" ? "active" : ""} onClick={() => setActiveTab("journal")}>午餐手账</button>
-        </nav>
-        <div className="account-pill" title="无需登录，午餐手账保存在当前设备">
-          <span aria-hidden="true">✓</span>
-          <strong>微信内直接用</strong>
-          <small>免登录</small>
-        </div>
-      </header>
-
-      {activeTab === "choose" ? (
-        <section className="chooser-page" id="top">
-          <div className="hero-copy">
-            <p className="eyebrow"><span>午休时间有限</span><span>选择困难无限</span></p>
-            <h1>把今天的午餐，<br /><em>交给一点运气。</em></h1>
-            <p className="hero-lead">定位附近、看看天气、随机一家。少纠结十分钟，多好好吃一顿。</p>
-
-            <div className="steps" aria-label="使用步骤">
-              <span><b>01</b> 找到你</span>
-              <span><b>02</b> 看看天</span>
-              <span><b>03</b> 替你选</span>
-            </div>
-
-            <form className="location-form" onSubmit={searchLocation}>
-              <label htmlFor="location">午餐从哪里出发？</label>
-              <div className="location-controls">
-                <input
-                  id="location"
-                  value={locationInput}
-                  onChange={(event) => setLocationInput(event.target.value)}
-                  placeholder="输入城市、商圈或邮编"
-                  autoComplete="street-address"
-                />
-                <button type="submit" disabled={locationState === "loading"}>查找</button>
-              </div>
-              <button className="locate-link" type="button" onClick={useMyLocation} disabled={locationState === "loading"}>
-                <span aria-hidden="true">⌖</span> 使用我的当前位置
-              </button>
-            </form>
-
-            <div className={`location-note ${locationState}`} role="status">
-              <span className="status-dot" aria-hidden="true" />
-              <div><strong>{locationLabel}</strong><small>{locationMessage}</small></div>
-            </div>
-          </div>
-
-          <div className="lunchbox" aria-label="午餐选择器">
-            <div className="weather-card lunchbox-cell">
-              <div className="cell-label">今日天气</div>
-              {weather ? (
-                <>
-                  <div className="weather-main"><span aria-hidden="true">{weather.icon}</span><strong>{Math.round(weather.temperature)}°</strong></div>
-                  <p>{weather.label} · 体感 {Math.round(weather.apparentTemperature)}°</p>
-                  <div className="weather-advice">
-                    <b>{weather.recommendedMode === "dine" ? "适合堂食" : "推荐外卖"}</b>
-                    <span>{weather.reason}</span>
-                  </div>
-                </>
-              ) : weatherState === "loading" ? (
-                <div className="empty-weather loading" role="status">
-                  <span aria-hidden="true">⛅</span>
-                  <p>正在读取<br />当地天气…</p>
-                </div>
-              ) : weatherState === "error" ? (
-                <div className="empty-weather error" role="status">
-                  <span aria-hidden="true">🌥️</span>
-                  <div>
-                    <p>天气暂时没取到<br />不影响帮你选午餐</p>
-                    <button
-                      className="weather-retry"
-                      type="button"
-                      onClick={() => {
-                        if (coordinates) void hydrateLocation(coordinates, locationLabel);
-                      }}
-                      disabled={!coordinates}
-                    >
-                      重试天气
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="empty-weather"><span aria-hidden="true">🌤️</span><p>设置地点后<br />查看午餐天气</p></div>
-              )}
-            </div>
-
-            <div className="mode-card lunchbox-cell">
-              <div className="cell-label">今天怎么吃</div>
-              <div className="mode-toggle" role="group" aria-label="用餐方式">
-                <button className={mealMode === "auto" ? "selected" : ""} onClick={() => setMealMode("auto")}><span>✨</span>智能</button>
-                <button className={mealMode === "dine" ? "selected" : ""} onClick={() => setMealMode("dine")}><span>🚶</span>堂食</button>
-                <button className={mealMode === "delivery" ? "selected" : ""} onClick={() => setMealMode("delivery")}><span>🛵</span>外卖</button>
-              </div>
-              <p className="mode-summary">当前：<strong>{effectiveMode === "dine" ? "出去走走" : "送到手边"}</strong></p>
-              <div className="mode-counts"><span>{dineCount}<small>附近候选</small></span><span>{deliveryCount}<small>标记可外带/配送</small></span></div>
-            </div>
-
-            <div className="result-card lunchbox-cell">
-              <div className="cell-label">命运的午餐</div>
-              {suggestion ? (
-                <div className="result-content">
-                  <div className="result-emoji" aria-hidden="true">🍚</div>
-                  <div>
-                    <p className="result-kicker">今天就吃</p>
-                    <h2>{suggestion.restaurant.name}</h2>
-                    <p className="dish-name">{suggestion.dish}</p>
-                    <p className="result-meta">约 {Math.max(4, Math.round(suggestion.restaurant.distance / 80))} 分钟 · {suggestion.mode === "dine" ? "堂食" : "外卖"}</p>
-                    {suggestion.needsDeliveryCheck && <small className="delivery-note">请在常用外卖平台确认配送范围</small>}
-                  </div>
-                </div>
-              ) : (
-                <div className={`result-empty ${isRolling ? "rolling" : ""}`}>
-                  <span aria-hidden="true">{isRolling ? "🍜" : "?"}</span>
-                  <p>{isRolling ? "正在认真乱选…" : "点击按钮，看看今天和谁有缘"}</p>
-                </div>
-              )}
-              <button className="journal-shortcut" onClick={putSuggestionInJournal} disabled={!suggestion}>把结果写进手账 <span aria-hidden="true">→</span></button>
-            </div>
-
-            <div className="map-card lunchbox-cell">
-              <div className="map-heading"><div><span>步行 15 分钟餐食圈</span><strong>{locationState === "ready" ? `${restaurants.length} 个候选` : "等待定位"}</strong></div>{coordinates && <a href={`https://uri.amap.com/marker?position=${coordinates.longitude},${coordinates.latitude}&name=${encodeURIComponent("午餐起点")}&callnative=0`} target="_blank" rel="noreferrer">高德地图 ↗</a>}</div>
-              <div className="mini-map" aria-label="附近餐饮位置示意图">
-                <div className="map-origin" aria-label="你的位置">我</div>
-                {visibleRestaurants.map((restaurant, index) => (
-                  <span
-                    className="map-pin"
-                    key={restaurant.id}
-                    style={{ left: `${16 + ((index * 29) % 69)}%`, top: `${14 + ((index * 37) % 70)}%` }}
-                    title={`${restaurant.name} · ${restaurant.distance}米`}
-                  />
-                ))}
-              </div>
-              <p className="map-attribution">{dataSource === "osm" ? "附近餐饮数据 © OpenStreetMap contributors" : dataSource === "fallback" ? "附近数据忙碌中，当前使用演示候选" : "定位后生成附近餐饮候选"}</p>
-            </div>
-
-            <button className="choose-button" onClick={chooseLunch} disabled={locationState !== "ready" || isRolling}>
-              <span>{isRolling ? "正在选择" : "帮我选择吧"}</span><b aria-hidden="true">→</b>
-            </button>
-          </div>
-        </section>
-      ) : (
-        <section className="journal-page">
-          <div className="journal-intro">
-            <p className="eyebrow"><span>午餐手账</span><span>一点点生活证据</span></p>
-            <h1>原来日子，<br />也可以按<em>午餐</em>翻阅。</h1>
-            <p>不要求打卡，也不评价热量。只记住今天真实吃了什么，以及那顿饭有没有让你开心一点。</p>
-            <div className="signin-note">
-              <span aria-hidden="true">📱</span>
-              <div><strong>无需登录，打开就能记</strong><p>记录仅保存在当前浏览器，不跨设备同步；清理网站数据会删除手账。</p></div>
-            </div>
-          </div>
-
-          <div className="journal-workspace">
-            <form className="journal-form" onSubmit={saveJournal}>
-              <div className="form-heading"><span>记录一顿午餐</span><small>不必是刚刚随机到的那顿</small></div>
-              <div className="form-row">
-                <label>日期<input type="date" value={form.eatenOn} onChange={(event) => setForm({ ...form, eatenOn: event.target.value })} required /></label>
-                <label>方式<select value={form.mealMode} onChange={(event) => setForm({ ...form, mealMode: event.target.value })}><option>堂食</option><option>外卖</option><option>自带</option></select></label>
-              </div>
-              <label>餐厅<input value={form.restaurant} onChange={(event) => setForm({ ...form, restaurant: event.target.value })} placeholder="今天在哪儿吃的？" maxLength={80} required /></label>
-              <label>餐品<input value={form.dish} onChange={(event) => setForm({ ...form, dish: event.target.value })} placeholder="具体吃了什么？" maxLength={80} required /></label>
-              <label>随手记<textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="比如：窗口位晒得到太阳，汤有一点咸。" maxLength={300} rows={3} /></label>
-              <button className="save-button" type="submit" disabled={journalStatus === "saving"}>{journalStatus === "saving" ? "正在记下…" : "记下这顿午餐"}<span aria-hidden="true">＋</span></button>
-              {journalMessage && <p className="journal-message" role="status">{journalMessage}</p>}
-            </form>
-
-            <div className="journal-list">
-              <div className="list-heading"><span>最近的午餐</span><strong>{`${journalEntries.length} 条`}</strong></div>
-              {journalStatus === "loading" ? (
-                <div className="list-empty">正在翻开你的午餐手账…</div>
-              ) : journalEntries.length > 0 ? (
-                journalEntries.map((entry) => (
-                  <article key={entry.id}>
-                    <time dateTime={entry.eatenOn}>{prettyDate(entry.eatenOn)}</time>
-                    <div><h3>{entry.dish}</h3><p>{entry.restaurant}{entry.location ? ` · ${entry.location}` : ""}</p>{entry.note && <blockquote>{entry.note}</blockquote>}</div>
-                    <span>{entry.mealMode}</span>
-                  </article>
-                ))
-              ) : (
-                <div className="list-empty"><span aria-hidden="true">🥣</span><strong>手账还是空的</strong><p>第一条不必特别。普通午餐也值得被记住。</p></div>
-              )}
-            </div>
-          </div>
-        </section>
-      )}
-
-      <footer>
-        <span>今天吃什么 · 午餐选择器 MVP</span>
-        <span>本站中转天气与餐饮查询 · 地图入口：高德地图</span>
-      </footer>
-    </main>
-  );
+  const picked=pickRestaurant(pool,constraints,[]);if(picked){setDirection(categoryOf(picked).id);setRestaurantId(picked.id);setSeen([picked.id]);setConfirmed(false);}
+ },[signature,constraints,zone]);
+ function selectPoint(p:Point){setPoint(p);setLocations([]);try{localStorage.setItem(PLACE,JSON.stringify(p));}catch{setNote('位置仅在本次使用，不会保留。');}}
+ function locate(){
+  if(!navigator.geolocation){setMessage('浏览器不支持定位，请手动设置地点。');return;}
+  setLocating(true);setMessage('正在取得位置…');
+  navigator.geolocation.getCurrentPosition(pos=>{setLocating(false);selectPoint({latitude:pos.coords.latitude,longitude:pos.coords.longitude,coordinateSystem:'wgs84',label:'当前位置'});},()=>{setLocating(false);setMessage('没有取得位置。请开启浏览器定位，或手动设置地点。');},{timeout:12000,maximumAge:60000});
+ }
+ async function search(event:FormEvent){
+  event.preventDefault();if(query.trim().length<2)return;const id=++searchId.current;setSearching(true);setLocations([]);
+  try{const response=await fetch(`/api/locations?q=${encodeURIComponent(query.trim())}`,{signal:AbortSignal.timeout(11000)});const body=await response.json();if(id!==searchId.current)return;if(!response.ok)throw Error(body.error);setLocations(body.locations??[]);setMessage(body.locations?.length?'请选择并确认午餐起点，城市参考点不代表你的实际位置。':'没有找到地点，可使用定位或经纬度。');}
+  catch{if(id===searchId.current)setMessage('地点搜索暂不可用，可以重试、使用定位或输入经纬度。');}finally{if(id===searchId.current)setSearching(false);}
+ }
+ function changeDirection(){
+  setConfirmed(false);setSwaps(v=>v+1);
+  const ids=point&&eligible.length?[...new Set(eligible.map(r=>categoryOf(r).id))]:INSPIRATIONS.filter(c=>!constraints.excluded.includes(c.id)).map(c=>c.id);
+  const next=randomCategory(ids,direction);if(!next){setNote('本轮品类都被避开了，可以在偏好中恢复。');return;}
+  if(next===direction&&eligible.length){changeRestaurant();return;}
+  setDirection(next);const pool=eligible.filter(r=>categoryOf(r).id===next);const pick=pickRestaurant(pool,constraints,seen);
+  setRestaurantId(pick?.id??null);if(pick)setSeen(s=>[...s,pick.id]);
+  setNote(point&&!eligible.length?'先换个灵感；附近暂没有符合全部条件的已核实候选。':'换个方向，也换个午餐心情。');
+ }
+ function changeRestaurant(){
+  const pick=pickRestaurant(matching,constraints,seen);setConfirmed(false);setSwaps(v=>v+1);
+  if(!pick){setNote('这个方向的候选已看完。可以重新挑一轮，或换个吃的。');return;}
+  setRestaurantId(pick.id);setSeen(s=>[...s,pick.id]);setNote('吃的方向不变，替你换一家。');
+ }
+ function accept(){
+  setNow(new Date());
+  if(!point){locate();return;}
+  if(!current){void loadNearby(point,constraints.radius);return;}
+  if(!evaluate(current,constraints,new Date(),zone).eligible){setRestaurantId(null);setNote('这家已不适合现在前往，正在替你重新选择。');void loadNearby(point,constraints.radius);return;}
+  if(Date.now()-Date.parse(current.checkedAt)>120000){setNote('出发前先刷新商家信息，请确认刷新后的建议。');void loadNearby(point,constraints.radius);return;}
+  setConfirmed(true);
+ }
+ useEffect(()=>{
+  if(tab!=='journal')return;try{setEntries(readJournal(localStorage));}catch{setJournalMessage('无法读取手账，请保留已有网站数据并检查浏览器存储权限。');}
+ },[tab]);
+ function save(event:FormEvent){event.preventDefault();try{setEntries(saveJournalEntry(localStorage,{...form,location:point?.label??''}));setJournalMessage('记好了，这一顿值得被记住。');setForm(v=>({...v,restaurant:'',dish:'',note:''}));}catch{setJournalMessage('未保存成功，请检查必填项和浏览器存储空间。');}}
+ function record(){if(!current)return;setForm(v=>({...v,restaurant:current.name,dish:'',mealMode:constraints.mode==='dine'?'堂食':constraints.mode==='takeaway'?'打包':'外卖'}));setJournalMessage('这里只预填餐厅，实际吃过后再填写餐品并保存。');setTab('journal');}
+ const searchPlace=point&& !['当前位置','手动 GPS 坐标'].includes(point.label)?point.label.replace(' · 城市参考点',''):'附近';
+ const mapSearch=`https://uri.amap.com/search?keyword=${encodeURIComponent(`${searchPlace} ${category.name}`)}${point?.coordinateSystem==='gcj02'?`&center=${point.longitude},${point.latitude}`:''}&callnative=0`;
+ return <main>
+  <header className="topbar"><a className="brand" href="#top" onClick={()=>setTab('choose')}><span className="brand-stamp">吃</span><span>今天吃什么</span></a><nav className="tabs" aria-label="主要导航"><button className={tab==='choose'?'active':''} onClick={()=>setTab('choose')}>替我决定</button><button className={tab==='journal'?'active':''} onClick={()=>setTab('journal')}>午餐手账</button></nav><div className="v2-badge">免登录 · 少纠结一顿</div></header>
+  {tab==='choose'?<div className="v2-shell" id="top">
+   <section className="v2-intro"><p className="eyebrow"><span>午休有限</span><span>纠结到此为止</span></p><h1>今天，就吃<span>这个吧。</span></h1><p>不用想好吃什么，我们先替你选。<br/>合适就出发，不合适就换一个。</p></section>
+   <section className="v2-pick" aria-label="随机午餐建议">
+    <div className="v2-card-head"><span>给今天的一点灵感</span><span className="v2-live">{current?'真实商家已找到':isLoading?'正在匹配附近商家':'先选吃的，再找店'}</span></div>
+    <div className="v2-food" key={direction}><div className="v2-food-icon" aria-hidden="true">{category.icon}</div><p>今天试试</p><h2>{category.name}</h2><p className="v2-food-hint">{category.hint}</p></div>
+    <div className="v2-pick-actions"><button className="v2-primary" onClick={accept} disabled={isLoading}>{isLoading?'正在找附近的店…':!point?'就吃这个 · 找附近的店':current?'就吃这个':'按这个方向再找找'} <span>↗</span></button><button className="v2-secondary" onClick={changeDirection}>换个吃的 <span>⟳</span></button></div>
+    <p className="v2-caption">{!point?'这是餐品灵感，设置位置后才能核实附近商家。':'根据品类信息匹配，不代表店内提供某道具体菜品。'}</p>
+   </section>
+   <section className="v2-location"><div><span className="v2-step">01 · 午餐起点</span><h2>{point?point.label:'附近好吃的，从找到你开始'}</h2></div><button className="v2-text-button" onClick={locate} disabled={isLoading}>{locating?'正在定位…':'⌖ 使用当前位置'}</button>
+    <details><summary>手动设置地点</summary><form className="v2-search" onSubmit={search}><input aria-label="地点名称" placeholder="输入城市、区域或具体地点" value={query} onChange={e=>setQuery(e.target.value)} required minLength={2}/><button type="submit" disabled={searching}>{searching?'查找中…':'查找'}</button></form>
+     {locations.map(l=><button className="v2-location-result" key={l.id} onClick={()=>selectPoint({latitude:l.latitude,longitude:l.longitude,coordinateSystem:l.coordinateSystem,label:l.name+(l.isCity?' · 城市参考点':'')})}><b>{l.name}</b><span>{l.admin1} {l.country}</span><small>{l.isCity?'使用这个城市参考点（并非实际定位）':'确认此处为午餐起点'} →</small></button>)}
+     <form className="v2-search" onSubmit={e=>{e.preventDefault();const values=coordText.split(/[,，\s]+/).filter(Boolean);const [latitude,longitude]=values.map(Number);if(values.length!==2||!Number.isFinite(latitude)||!Number.isFinite(longitude)||Math.abs(latitude)>90||Math.abs(longitude)>180){setMessage('请按“纬度,经度”输入有效的 GPS 坐标。');return;}selectPoint({latitude,longitude,label:'手动 GPS 坐标',coordinateSystem:'wgs84'});}}><input aria-label="GPS经纬度" value={coordText} onChange={e=>setCoordText(e.target.value)} placeholder="GPS 纬度,经度，例如 31.23,121.47"/><button type="submit">确认坐标</button></form><p className="v2-caption">定位仅在点击后请求；位置会发送给餐饮与天气数据服务，用于本次查询。</p></details>
+    <p className="v2-status" role="status">{message||'不授权定位，也能继续换午餐灵感。'} {point&&!busy&&<button className="v2-inline" onClick={()=>loadNearby(point,constraints.radius)}>刷新附近</button>}</p>
+   </section>
+   <section className="v2-results" aria-label="附近真实餐厅"><div className="v2-section-heading"><div><span className="v2-step">02 · 把想吃的变成吃得到</span><h2>{current?(confirmed?'这一顿，有着落了':'附近这一家，怎么样？'):point?'先确认有合适的店':'真实商家，等你设置起点'}</h2></div>{point&&<span className="v2-counter">{eligible.length} 家可考虑 / {restaurants.length} 家找到</span>}</div>
+    {isLoading?<div className="v2-empty" role="status">正在查询真实商家…<p>天气单独加载，不影响选餐。</p></div>:current?<article className="v2-restaurant"><div className="v2-restaurant-title"><div><span>{current.source} · {category.name}</span><h3>{current.name}</h3></div><span className={`v2-pill ${currentStatus?.hours.status==='open'?'good':''}`}>{currentStatus?.hours.status==='open'?'按时段预计可前往':'营业待核实'}</span></div>
+     <div className="v2-facts"><div><small>距离</small><strong>直线 {current.distance<1000?`${current.distance} m`:`${(current.distance/1000).toFixed(1)} km`}</strong></div><div><small>预算参考</small><strong>{current.price!==null?`人均约 ¥${current.price}`:'价格未知'}</strong></div><div><small>营业信息</small><strong>{current.openingHours||'时段未收录'}</strong></div></div>
+     <p className="v2-explain">{constraints.preferred&&constraints.preferred!==direction?'偏好的品类暂未选中，这次替你换个方向。':'从符合当前条件的候选中随机选出，近一点的选择优先。'}{constraints.budget!==null&&current.price!==null&&current.price>constraints.budget?' 参考人均高于期望预算，未突破任何严格上限。':''}</p>
+     <p className="v2-caution">{currentStatus?.hours.label}。距离按直线计算，步行时间仅估算；闭餐判断含点餐、等餐及堂食用餐余量，厨房可能提前停止接单。{current.price===null?' 当前没有价格依据，请先核实菜单。':' 参考人均不等于最终账单。'}</p>
+     {current.address&&<p className="v2-caption">地址：{current.address}</p>}
+     <div className="v2-restaurant-actions">{confirmed?<a className="v2-primary" href={mapLink(current)} target="_blank" rel="noreferrer" onClick={e=>{if(!evaluate(current,constraints,new Date(),zone).eligible||Date.now()-Date.parse(current.checkedAt)>120000){e.preventDefault();setConfirmed(false);setNote('信息已变化，出发前重新确认。');loadNearby(point!,constraints.radius);}}}>{currentStatus?.hours.status==='open'?'打开地图 · 出发':'打开地图 · 先核实'} ↗</a>:<button className="v2-primary" onClick={accept}>就吃这个 ↗</button>}<button className="v2-secondary" onClick={changeRestaurant}>这个想吃，换家店</button></div>
+     {confirmed&&<button className="v2-inline" onClick={record}>吃过了？预填餐厅到手账 →</button>}<p className="v2-caption">本次查询 {new Date(current.checkedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})} · <a href={current.sourceUrl} target="_blank" rel="noreferrer">查看来源</a> · 营业时段为公开信息，非商家实时接单承诺</p>
+    </article>:<div className="v2-empty"><span aria-hidden="true">{point?'⌕':'⌖'}</span><h3>{point?'暂未找到符合全部条件的店':'先给你灵感，不虚构附近餐厅'}</h3><p>{point?(constraints.mode==='delivery'?'配送和接单信息暂未接入，可去平台核实；也可以切换堂食或打包。':constraints.strictBudget&&constraints.budget!==null?'价格未知的商家不会被当作预算内推荐。可查看待核实候选，或由你调整预算规则。':'餐厅可能已闭餐、来不及用餐、被避开或数据覆盖不足。可以调整范围、重试或打开地图。'):'点击上方“就吃这个”获取位置，即可查找真实商家。'}</p>{point&&<div className="v2-empty-actions"><button className="v2-secondary" onClick={()=>loadNearby(point,constraints.radius)}>重试附近查询</button><a className="v2-secondary" href={mapSearch} target="_blank" rel="noreferrer">打开地图搜索 ↗</a></div>}</div>}
+    {checks.some(x=>!x.eligible)&&<details className="v2-filtered"><summary>{checks.filter(x=>!x.eligible).length} 家暂未推荐 · 查看原因</summary>{checks.filter(x=>!x.eligible).slice(0,8).map(x=><div className="v2-filter-row" key={x.r.id}><div><b>{x.r.name}</b><p>{x.reasons.join(' · ')} · {x.r.openingHours||'营业时间未知'} · {x.r.price===null?'价格未知':`参考人均 ¥${x.r.price}`}</p></div><a href={mapLink(x.r)} target="_blank" rel="noreferrer">自行核实 ↗</a></div>)}</details>}
+   </section>
+   <aside className="v2-settings"><details><summary><span>给随机加一点边界</span><small>{constraints.budget?`期望 ¥${constraints.budget}${constraints.strictBudget?' · 严格上限':''}`:'预算不限'} · 直线 {constraints.radius} m <b>调整</b></small></summary><div className="v2-controls"><label>用餐方式<select value={constraints.mode} onChange={e=>setConstraints(c=>({...c,mode:e.target.value as Constraints['mode']}))}><option value="dine">堂食</option><option value="takeaway">打包自取</option><option value="delivery">外卖（需平台核实）</option></select></label><label>期望预算（元）<input type="number" min="1" max="5000" placeholder="不限" value={constraints.budget??''} onChange={e=>setConstraints(c=>({...c,budget:e.target.value&&Number(e.target.value)>0?Math.min(5000,Number(e.target.value)):null}))}/></label><label>直线范围<select value={constraints.radius} onChange={e=>setConstraints(c=>({...c,radius:Number(e.target.value)}))}>{[600,1200,2000,3000].map(n=><option key={n} value={n}>{n} 米</option>)}</select></label><label>偏爱的方向（可跳过）<select value={constraints.preferred} onChange={e=>setConstraints(c=>({...c,preferred:e.target.value}))}><option value="">都可以，替我随机</option>{INSPIRATIONS.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label></div><label className="v2-check"><input type="checkbox" checked={constraints.strictBudget} onChange={e=>setConstraints(c=>({...c,strictBudget:e.target.checked}))}/>预算为严格上限：价格未知或参考人均超额时不作为主推荐</label><p className="v2-caption">品类偏好可放宽，严格预算和距离不自动突破。人均仅供参考，无法保证实际账单；过敏与具体食材请向商家核实。</p><button className="v2-inline" onClick={()=>{setConstraints(DEFAULTS);setNote('已恢复默认边界。');}}>恢复默认条件</button></details></aside>
+   {swaps>=3&&<div className="v2-feedback"><b>还没遇到想吃的？这轮先避开：</b><div>{INSPIRATIONS.map(c=><button className={constraints.excluded.includes(c.id)?'selected':''} key={c.id} onClick={()=>setConstraints(v=>({...v,excluded:v.excluded.includes(c.id)?v.excluded.filter(id=>id!==c.id):[...v.excluded,c.id]}))}>{c.name}</button>)}</div><p className="v2-caption">点一下避开，再点恢复。你也可以不回答，直接继续换。</p></div>}
+   {note&&<div className="v2-notice" role="status">{note}{note.includes('候选已看完')&&<button className="v2-inline" onClick={()=>{setSeen([]);const pick=pickRestaurant(matching,constraints,[]);setRestaurantId(pick?.id??null);if(pick)setSeen([pick.id]);setNote('重新挑一轮，之前看过的店也会加入。');}}>重新挑一轮</button>}</div>}
+   <div className="v2-weather">{weather?`${weather.precipitation>0?'🌧️ 有降水，出门带伞':'🌤️ 当前天气'} · ${Math.round(weather.temperature_2m)}°C · 仅供出行参考`:weatherBusy?'天气单独查询中…':'天气暂未获取，不影响选餐。'}<span>先替你决定，再帮你出发。</span></div>
+  </div>:<section className="journal-page"><div className="journal-intro"><p className="eyebrow"><span>午餐手账</span><span>一点点生活证据</span></p><h1>日子，也可以<br/>按<em>午餐</em>翻阅。</h1><p>记录实际吃过的这一顿，推荐结果不会自动写入。</p><div className="signin-note"><span>📱</span><div><strong>只保存在当前浏览器</strong><p>不跨设备同步，清理网站数据会删除记录。</p></div></div></div><div className="journal-workspace"><form className="journal-form" onSubmit={save}><div className="form-heading">记录一顿午餐</div><div className="form-row"><label>日期<input type="date" value={form.eatenOn} onChange={e=>setForm(v=>({...v,eatenOn:e.target.value}))} required/></label><label>方式<select value={form.mealMode} onChange={e=>setForm(v=>({...v,mealMode:e.target.value}))}><option>堂食</option><option>打包</option><option>外卖</option><option>自带</option></select></label></div><label>餐厅<input value={form.restaurant} onChange={e=>setForm(v=>({...v,restaurant:e.target.value}))} maxLength={80} required/></label><label>实际吃的餐品<input value={form.dish} onChange={e=>setForm(v=>({...v,dish:e.target.value}))} maxLength={80} required/></label><label>随手记<textarea value={form.note} onChange={e=>setForm(v=>({...v,note:e.target.value}))} rows={3} maxLength={300}/></label><button className="save-button" type="submit">记下这顿午餐 ＋</button>{journalMessage&&<p role="status">{journalMessage}</p>}</form><div className="journal-list"><div className="list-heading"><span>最近的午餐</span><strong>{entries.length} 条</strong></div>{entries.length?entries.map(e=><article key={e.id}><time>{e.eatenOn}</time><div><h3>{e.dish}</h3><p>{e.restaurant}</p>{e.note&&<blockquote>{e.note}</blockquote>}</div><span>{e.mealMode}</span></article>):<div className="list-empty">还没有记录，普通午餐也值得被记住。</div>}</div></div></section>}
+  <footer><span>今天吃什么 · 少纠结一顿</span><span>真实餐厅来自高德地图 / © OpenStreetMap contributors · 信息缺失会明确标注</span></footer>
+ </main>;
 }
