@@ -1,8 +1,8 @@
 # 今天吃什么｜午餐选择器
 
-保留午餐推荐、定位、天气、附近餐饮和午餐手账功能。本地版使用 SQLite 保存记录，不需要 Cloudflare 或 ChatGPT 账号。
+结合定位、天气和附近餐饮快速决定午餐。可在本机运行，也可免费部署到 Vercel；不需要 Cloudflare、数据库或 API 密钥。
 
-## 本地部署
+## 本地启动
 
 安装 Node.js 22.13 或更高版本（推荐 Node.js 24），在项目目录运行：
 
@@ -12,27 +12,28 @@ npm run build
 npm start
 ```
 
-Windows 也可以双击 `start-local.cmd` 启动（首次使用需安装 Node.js 和依赖）。
+打开 http://localhost:3000 。开发时使用 `npm run dev`，Windows 可双击 `start-local.cmd`。
 
-打开 http://localhost:3000 。开发时使用 `npm run dev`。也可以使用 pnpm 安装并运行同名命令。
+## Vercel 免费部署
 
-服务默认只监听本机，关闭终端即停止。记录保存在 `data/lunch.sqlite`，重启后保留。备份前停止服务并复制整个 `data` 文件夹。不同浏览器通过设备 Cookie 区分记录，清除 Cookie 后不会再显示原有记录。
+1. 使用个人 Vercel Hobby 账号，登录 https://vercel.com/new 。
+2. 导入 GitHub 仓库 `M1-NGC1952/EAT-WHAT`，如提示则授权 Vercel 访问该仓库。
+3. 项目名建议 `eat-what`（最终名称取决于可用性），框架 Next.js，根目录 `./`，Node.js 24.x。仓库已包含构建配置，无需填写环境变量。
+4. 点击 Deploy，等待 Ready，然后使用项目 Domains 中的生产域名分享。不要分享单次预览部署的网址。
+5. 确认 Git 设置的 Production Branch 为 `main`。以后推送 main 会自动部署；部署成功后，刷新原生产网址即可看到新版。没有推送或部署失败时，线上不会更新。
 
-可复制 `.env.example` 为 `.env.local` 并设置 `LUNCH_DB_PATH` 更换数据库位置。数据库、环境文件和个人记录不应上传到 GitHub；项目已包含忽略规则。线上原数据库的数据不会自动迁移。
+不要更换项目域名，否则浏览器中的手账不会自动转移到新域名。先用大陆手机流量和 Wi-Fi 分别测试首页、地点搜索、天气、午餐选择及手账。Vercel 在大陆的连通性不作保证；Hobby 适用于个人非商业用途，受免费额度限制。
 
-天气和城市查询使用 Open-Meteo，附近餐饮使用 OpenStreetMap Overpass，需要联网。浏览器定位需要授权；餐饮服务无结果时会使用原有示例数据。
+## 手账保存
 
-## GitHub
+手账保存在当前浏览器的 localStorage，不上传到云端，不需要登录或付费数据库。刷新、重新打开、正常发布新版本后记录仍保留。不同手机、浏览器、微信内置浏览器和域名之间不共享数据；清理网站数据或退出无痕模式可能导致数据丢失。
 
-在 GitHub 创建空仓库后，在本目录运行（替换为实际仓库地址）：
+之前版本的 SQLite 或原 Sites 云数据库记录不会自动迁移。当前版本不再使用 `/api/lunches` 和本地数据库。
 
-```sh
-git init -b main
-git add .
-git commit -m "Add locally deployable lunch picker"
-git remote add origin https://github.com/M1-NGC1952/EAT-WHAT.git
-git push -u origin main
-```
+## 外部服务
 
-GitHub 托管源码。本项目包含服务端接口和数据库，GitHub Pages 无法运行完整功能。
+天气和城市查询经服务端访问 Open-Meteo；附近餐饮经服务端访问 OpenStreetMap Overpass。两者需要联网，无服务商密钥。浏览器定位需授权；附近餐厅无真实结果时展示标注为示例的候选餐厅。免费版不提供外卖下单或配送服务。
 
+## 后续修改
+
+在 Codex 中指定仓库 https://github.com/M1-NGC1952/EAT-WHAT 提出修改需求。修改、验证并推送 main 后，由 Vercel 的 GitHub 集成部署。构建日志和最终上线状态在 Vercel 的 Deployments 中查看。

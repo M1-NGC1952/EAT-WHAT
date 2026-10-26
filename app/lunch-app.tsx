@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { readJournal, saveJournalEntry, type LunchEntry } from "./journal-storage";
 
 type Coordinates = { latitude: number; longitude: number };
 type MealMode = "auto" | "dine" | "delivery";
@@ -34,17 +35,6 @@ type Suggestion = {
   dish: string;
   mode: Exclude<MealMode, "auto">;
   needsDeliveryCheck: boolean;
-};
-
-type LunchEntry = {
-  id: number;
-  eatenOn: string;
-  restaurant: string;
-  dish: string;
-  mealMode: string;
-  location: string;
-  note: string;
-  createdAt: string;
 };
 
 const fallbackRestaurants: Restaurant[] = [
@@ -145,24 +135,16 @@ export default function LunchApp() {
   useEffect(() => {
     if (activeTab !== "journal") return;
 
-    let cancelled = false;
-    setJournalStatus("loading");
-    fetch("/api/lunches")
-      .then(async (response) => {
-        const payload = (await response.json()) as { entries?: LunchEntry[]; error?: string };
-        if (!response.ok) throw new Error(payload.error ?? "读取失败");
-        if (!cancelled) setJournalEntries(payload.entries ?? []);
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setJournalMessage(error instanceof Error ? error.message : "手账读取失败");
-      })
-      .finally(() => {
-        if (!cancelled) setJournalStatus("idle");
-      });
-
-    return () => {
-      cancelled = true;
+    const reload = () => {
+      try {
+        setJournalEntries(readJournal(window.localStorage));
+      } catch {
+        setJournalMessage("手账无法读取，请检查浏览器是否允许网站保存数据；不要清理已有网站数据。");
+      }
     };
+    reload();
+    window.addEventListener("storage", reload);
+    return () => window.removeEventListener("storage", reload);
   }, [activeTab]);
 
   async function hydrateLocation(point: Coordinates, label: string) {
@@ -320,21 +302,15 @@ export default function LunchApp() {
     setJournalStatus("saving");
     setJournalMessage("");
     try {
-      const response = await fetch("/api/lunches", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          location: coordinates ? locationLabel : "",
-        }),
+      const entries = saveJournalEntry(window.localStorage, {
+        ...form,
+        location: coordinates ? locationLabel : "",
       });
-      const payload = (await response.json()) as { entry?: LunchEntry; error?: string };
-      if (!response.ok || !payload.entry) throw new Error(payload.error ?? "保存失败");
-      setJournalEntries((current) => [payload.entry as LunchEntry, ...current]);
+      setJournalEntries(entries);
       setJournalMessage("记好了。未来的你会感谢这顿没有被忘掉的午餐。");
       setForm((current) => ({ ...current, restaurant: "", dish: "", note: "" }));
     } catch (error) {
-      setJournalMessage(error instanceof Error ? error.message : "保存失败");
+      setJournalMessage(error instanceof Error && error.message.startsWith("请填写") ? error.message : "没有保存成功，请检查浏览器存储空间和网站数据权限。");
     } finally {
       setJournalStatus("idle");
     }
@@ -495,7 +471,7 @@ export default function LunchApp() {
             <p>不要求打卡，也不评价热量。只记住今天真实吃了什么，以及那顿饭有没有让你开心一点。</p>
             <div className="signin-note">
               <span aria-hidden="true">📱</span>
-              <div><strong>无需登录，打开就能记</strong><p>手账与当前微信或浏览器设备绑定，请不要清理网站数据。</p></div>
+              <div><strong>无需登录，打开就能记</strong><p>记录仅保存在当前浏览器，不跨设备同步；清理网站数据会删除手账。</p></div>
             </div>
           </div>
 
