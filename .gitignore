@@ -1,0 +1,8 @@
+node_modules/
+.next/
+data/
+*.sqlite*
+*.log
+*.tsbuildinfo
+.env*
+!.env.example
