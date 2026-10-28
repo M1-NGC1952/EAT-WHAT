@@ -15,6 +15,9 @@ export default function LunchApp(){
  const [query,setQuery]=useState('');const [locations,setLocations]=useState<LocationResult[]>([]);
  const [busy,setBusy]=useState(false),[searching,setSearching]=useState(false),[locating,setLocating]=useState(false);
  const [message,setMessage]=useState(''),[note,setNote]=useState('');
+ const [locationMessage,setLocationMessage]=useState('');
+ const [nearbyState,setNearbyState]=useState<'idle'|'loading'|'success'|'error'>('idle');
+ const placeVersion=useRef(0);
  const [constraints,setConstraints]=useState<Constraints>(DEFAULTS);
  const [zone,setZone]=useState<string|null>(null),[weather,setWeather]=useState<{temperature_2m:number;precipitation:number}|null>(null);
  const [weatherBusy,setWeatherBusy]=useState(false),[now,setNow]=useState(()=>new Date());
@@ -42,7 +45,7 @@ export default function LunchApp(){
     setConstraints({...DEFAULTS,...raw,budget:typeof raw.budget==='number'&&raw.budget>0?Math.min(5000,raw.budget):null,excluded:Array.isArray(raw.excluded)?raw.excluded.filter((id:unknown)=>typeof id==='string'&&CATEGORIES.some(c=>c.id===id)):[]});
    }
    const p=JSON.parse(localStorage.getItem(PLACE)||'null');
-   if(p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180&&typeof p.label==='string')setPoint(p);
+   if(p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180&&typeof p.label==='string'){selectPoint(p,['当前位置','已取得当前位置'].includes(p.label));}
   }catch{setNote('未能恢复偏好，你仍可以正常随机选择。');}
   restored.current=true;setLoaded(true);
   const timer=setInterval(()=>setNow(new Date()),30000);
@@ -53,18 +56,18 @@ export default function LunchApp(){
   if(!loaded)return;try{localStorage.setItem(SETTINGS,JSON.stringify({...constraints,excluded:[]}));}catch{setNote('浏览器未允许保存偏好，本次仍可正常使用。');}
  },[constraints,loaded]);
  async function loadNearby(p:Point,radius:number){
-  const id=++requestId.current;setBusy(true);setRestaurants([]);setRestaurantId(null);setConfirmed(false);setSeen([]);setWeather(null);setZone(null);setWeatherBusy(true);setMessage('正在找真实餐厅，营业和价格有缺失时会明确告诉你。');
+  const id=++requestId.current;setBusy(true);setNearbyState('loading');setRestaurants([]);setRestaurantId(null);setConfirmed(false);setSeen([]);setWeather(null);setZone(null);setWeatherBusy(true);setMessage('正在找真实餐厅，营业和价格有缺失时会明确告诉你。');
   const params=new URLSearchParams({lat:String(p.latitude),lon:String(p.longitude),radius:String(radius),system:p.coordinateSystem??'wgs84'});
   void fetch(`/api/context?${params}&part=weather`,{signal:AbortSignal.timeout(11000)}).then(r=>r.json()).then(body=>{if(id===requestId.current){setWeather(body.weather??null);setZone(body.timeZone??null);}}).catch(()=>{}).finally(()=>{if(id===requestId.current)setWeatherBusy(false);});
   try{
    const response=await fetch(`/api/context?${params}`,{signal:AbortSignal.timeout(28000)});const body=await response.json();
    if(id!==requestId.current)return;
    if(!response.ok)throw Error(body.message||'餐饮服务暂不可用');
-   setRestaurants(body.restaurants??[]);setMessage(body.message||`找到了 ${body.restaurants?.length??0} 家真实餐厅。`);setNow(new Date());
-  }catch(error){if(id===requestId.current)setMessage(error instanceof Error&&error.name!=='TimeoutError'?error.message:'附近查询超时，请重试或打开地图。');}
+   setRestaurants(body.restaurants??[]);setNearbyState('success');setMessage(body.message||`找到了 ${body.restaurants?.length??0} 家真实餐厅。`);setNow(new Date());
+  }catch(error){if(id===requestId.current){setNearbyState('error');setMessage(error instanceof Error&&error.name!=='TimeoutError'?error.message:'附近查询超时，请重试或打开地图。');}}
   finally{if(id===requestId.current)setBusy(false);}
  }
- useEffect(()=>{if(point&&loaded)void loadNearby(point,constraints.radius);},[point,constraints.radius,loaded]);
+ useEffect(()=>{if(point&&loaded)void loadNearby(point,constraints.radius);},[point?.latitude,point?.longitude,point?.coordinateSystem,constraints.radius,loaded]);
  useEffect(()=>{
   if(!eligible.length){
    setRestaurantId(null);setConfirmed(false);
@@ -84,16 +87,31 @@ export default function LunchApp(){
   }
   const picked=pickRestaurant(pool,constraints,[]);if(picked){setDirection(categoryOf(picked).id);setRestaurantId(picked.id);setSeen([picked.id]);setConfirmed(false);}
  },[signature,constraints,zone,skipped]);
- function selectPoint(p:Point){setPoint(p);setLocations([]);try{localStorage.setItem(PLACE,JSON.stringify(p));}catch{setNote('位置仅在本次使用，不会保留。');}}
+ function selectPoint(p:Point,reverse=false){
+  const version=++placeVersion.current;searchId.current++;setSearching(false);setLocating(false);
+  if(point&&point.latitude===p.latitude&&point.longitude===p.longitude&&point.coordinateSystem===p.coordinateSystem&&loaded)void loadNearby(p,constraints.radius);
+  setPoint(p);setQuery(p.label);setLocations([]);setLocationMessage(reverse?'已取得定位坐标，正在解析详细地址…':'已确认午餐起点，正在自动查询附近餐厅。');
+  try{localStorage.setItem(PLACE,JSON.stringify(p));}catch{setNote('位置仅在本次使用，不会保留。');}
+  if(reverse){const params=new URLSearchParams({lat:String(p.latitude),lon:String(p.longitude),system:p.coordinateSystem??'wgs84'});
+   void fetch(`/api/reverse?${params}`,{signal:AbortSignal.timeout(12000)}).then(async response=>{
+    const body=await response.json();if(version!==placeVersion.current)return;
+    if(!response.ok||!body.address){setLocationMessage('已取得定位坐标，但详细地址暂未解析；餐厅查询单独进行。');return;}
+    const resolved={...p,label:body.address};setPoint(resolved);setQuery(body.address);setLocationMessage('已显示定位地址。附近餐厅会自动查询，无需再次点查找。');
+    try{localStorage.setItem(PLACE,JSON.stringify(resolved));}catch{}
+   }).catch(()=>{if(version===placeVersion.current)setLocationMessage('详细地址解析暂不可用，定位坐标已保留。');});
+  }
+ }
  function locate(){
-  if(!navigator.geolocation){setMessage('浏览器不支持定位，请手动设置地点。');return;}
-  setLocating(true);setMessage('正在取得位置…');
-  navigator.geolocation.getCurrentPosition(pos=>{setLocating(false);selectPoint({latitude:pos.coords.latitude,longitude:pos.coords.longitude,coordinateSystem:'wgs84',label:'当前位置'});},()=>{setLocating(false);setMessage('没有取得位置。请开启浏览器定位，或手动设置地点。');},{timeout:12000,maximumAge:60000});
+  if(!navigator.geolocation){setLocationMessage('浏览器不支持定位，请手动设置地点。');return;}
+  setLocating(true);setLocationMessage('正在取得位置…');
+  const version=++placeVersion.current;
+  navigator.geolocation.getCurrentPosition(pos=>{if(version!==placeVersion.current)return;setLocating(false);selectPoint({latitude:pos.coords.latitude,longitude:pos.coords.longitude,coordinateSystem:'wgs84',label:'已取得当前位置'},true);},()=>{if(version!==placeVersion.current)return;setLocating(false);setLocationMessage('没有取得位置。请开启浏览器定位，或手动设置地点。');},{timeout:12000,maximumAge:60000});
  }
  async function search(event:FormEvent){
   event.preventDefault();if(query.trim().length<2)return;const id=++searchId.current;setSearching(true);setLocations([]);
-  try{const response=await fetch(`/api/locations?q=${encodeURIComponent(query.trim())}`,{signal:AbortSignal.timeout(11000)});const body=await response.json();if(id!==searchId.current)return;if(!response.ok)throw Error(body.error);setLocations(body.locations??[]);setMessage(body.locations?.length?'请选择并确认午餐起点，城市参考点不代表你的实际位置。':'没有找到地点，可使用定位或经纬度。');}
-  catch{if(id===searchId.current)setMessage('地点搜索暂不可用，可以重试、使用定位或输入经纬度。');}finally{if(id===searchId.current)setSearching(false);}
+  setLocationMessage('正在查找地点，选中地点后会自动查询餐厅。');
+  try{const response=await fetch(`/api/locations?q=${encodeURIComponent(query.trim())}`,{signal:AbortSignal.timeout(11000)});const body=await response.json();if(id!==searchId.current)return;if(!response.ok)throw Error(body.error);setLocations(body.locations??[]);setLocationMessage(body.message||(body.locations?.length?'请点选一个地点，确认后自动查找附近餐厅。':'没有找到地点，可使用定位或经纬度。'));}
+  catch(error){if(id===searchId.current)setLocationMessage(error instanceof Error&&error.name!=='TimeoutError'?error.message:'地点查询超时，请重试或使用定位。');}finally{if(id===searchId.current)setSearching(false);}
  }
  function changeDirection(){
   setConfirmed(false);setFinalPick(false);setSwaps(v=>v+1);
@@ -140,7 +158,7 @@ export default function LunchApp(){
  },[tab]);
  function save(event:FormEvent){event.preventDefault();try{setEntries(saveJournalEntry(localStorage,{...form,location:point?.label??''}));setJournalMessage('记好了，这一顿值得被记住。');setForm(v=>({...v,restaurant:'',dish:'',note:''}));}catch{setJournalMessage('未保存成功，请检查必填项和浏览器存储空间。');}}
  function record(){if(!current)return;setForm(v=>({...v,restaurant:current.name,dish:'',mealMode:constraints.mode==='dine'?'堂食':constraints.mode==='takeaway'?'打包':'外卖'}));setJournalMessage('这里只预填餐厅，实际吃过后再填写餐品并保存。');setTab('journal');}
- const searchPlace=point&& !['当前位置','手动 GPS 坐标'].includes(point.label)?point.label.replace(' · 城市参考点',''):'附近';
+ const searchPlace=point&& !['当前位置','已取得当前位置','手动 GPS 坐标'].includes(point.label)?point.label.replace(' · 城市参考点',''):'附近';
  const mapSearch=`https://uri.amap.com/search?keyword=${encodeURIComponent(`${searchPlace} ${category.name}`)}${point?.coordinateSystem==='gcj02'?`&center=${point.longitude},${point.latitude}`:''}&callnative=0`;
  return <main>
   <header className="topbar"><a className="brand" href="#top" onClick={()=>setTab('choose')}><span className="brand-stamp">吃</span><span>今天吃什么</span></a><nav className="tabs" aria-label="主要导航"><button className={tab==='choose'?'active':''} onClick={()=>setTab('choose')}>替我决定</button><button className={tab==='journal'?'active':''} onClick={()=>setTab('journal')}>午餐手账</button></nav><div className="v2-badge">免登录 · 少纠结一顿</div></header>
@@ -152,14 +170,14 @@ export default function LunchApp(){
     <div className="v2-pick-actions"><button className="v2-primary" onClick={allSoftSkipped?resetRound:accept} disabled={isLoading&&!allSoftSkipped}>{allSoftSkipped?'重新洗牌 · 保留硬限制':isLoading?'正在找附近的店…':!point?'就吃这个 · 找附近的店':current?'就吃这个':'按这个方向再找找'} <span>↗</span></button><button className="v2-secondary" onClick={changeDirection}>{allSoftSkipped?'重新开始一轮':'换个吃的'} <span>⟳</span></button></div>
     <p className="v2-caption">{!point?'这是餐品灵感，设置位置后才能核实附近商家。':'根据品类信息匹配，不代表店内提供某道具体菜品。'}</p>
    </section>
-   <section className="v2-location"><div><span className="v2-step">01 · 午餐起点</span><h2>{point?point.label:'附近好吃的，从找到你开始'}</h2></div><button className="v2-text-button" onClick={locate} disabled={isLoading}>{locating?'正在定位…':'⌖ 使用当前位置'}</button>
-    <details><summary>手动设置地点</summary><form className="v2-search" onSubmit={search}><input aria-label="地点名称" placeholder="输入城市、区域或具体地点" value={query} onChange={e=>setQuery(e.target.value)} required minLength={2}/><button type="submit" disabled={searching}>{searching?'查找中…':'查找'}</button></form>
-     {locations.map(l=><button className="v2-location-result" key={l.id} onClick={()=>selectPoint({latitude:l.latitude,longitude:l.longitude,coordinateSystem:l.coordinateSystem,label:l.name+(l.isCity?' · 城市参考点':'')})}><b>{l.name}</b><span>{l.admin1} {l.country}</span><small>{l.isCity?'使用这个城市参考点（并非实际定位）':'确认此处为午餐起点'} →</small></button>)}
+   <section className="v2-location"><div><span className="v2-step">01 · 午餐起点</span><h2>{point?point.label:'附近好吃的，从找到你开始'}</h2>{point&&<p className="v2-caption">纬度 {point.latitude.toFixed(5)} · 经度 {point.longitude.toFixed(5)} · {point.coordinateSystem==='gcj02'?'地图坐标':'GPS 坐标'}</p>}</div><button className="v2-text-button" onClick={locate} disabled={isLoading}>{locating?'正在定位…':'⌖ 使用当前位置'}</button>
+    <details><summary>手动设置地点</summary><form className="v2-search" onSubmit={search}><input aria-label="地点名称" placeholder="输入城市、区域或具体地点" value={query} onChange={e=>setQuery(e.target.value)} required minLength={2}/><button type="submit" disabled={searching}>{searching?'查找中…':'查找地点'}</button></form>
+     {locations.map(l=><button className="v2-location-result" key={l.id} onClick={()=>selectPoint({latitude:l.latitude,longitude:l.longitude,coordinateSystem:l.coordinateSystem,label:[l.name,l.admin1,l.country].filter(Boolean).join(' · ')+(l.isCity?' · 城市参考点':'')})}><b>{l.name}</b><span>{l.admin1} {l.country}</span><small>{l.isCity?'使用这个城市参考点（并非实际定位）':'确认这里并查附近餐厅'} →</small></button>)}
      <form className="v2-search" onSubmit={e=>{e.preventDefault();const values=coordText.split(/[,，\s]+/).filter(Boolean);const [latitude,longitude]=values.map(Number);if(values.length!==2||!Number.isFinite(latitude)||!Number.isFinite(longitude)||Math.abs(latitude)>90||Math.abs(longitude)>180){setMessage('请按“纬度,经度”输入有效的 GPS 坐标。');return;}selectPoint({latitude,longitude,label:'手动 GPS 坐标',coordinateSystem:'wgs84'});}}><input aria-label="GPS经纬度" value={coordText} onChange={e=>setCoordText(e.target.value)} placeholder="GPS 纬度,经度，例如 31.23,121.47"/><button type="submit">确认坐标</button></form><p className="v2-caption">定位仅在点击后请求；位置会发送给餐饮与天气数据服务，用于本次查询。</p></details>
-    <p className="v2-status" role="status">{message||'不授权定位，也能继续换午餐灵感。'} {point&&!busy&&<button className="v2-inline" onClick={()=>loadNearby(point,constraints.radius)}>刷新附近</button>}</p>
+    <p className="v2-status" role="status">{locationMessage||'不授权定位，也能继续换午餐灵感。'} {point&&!busy&&nearbyState!=='error'&&<button className="v2-inline" onClick={()=>loadNearby(point,constraints.radius)}>刷新附近</button>}</p>
    </section>
-   <section className="v2-results" aria-label="附近真实餐厅"><div className="v2-section-heading"><div><span className="v2-step">02 · 把想吃的变成吃得到</span><h2>{current?(confirmed?'这一顿，有着落了':finalPick?'这一顿，替你定一家':'附近这一家，怎么样？'):point?'先确认有合适的店':'真实商家，等你设置起点'}</h2></div>{point&&<span className="v2-counter">{eligible.length} 家可考虑 / {restaurants.length} 家找到</span>}</div>
-    {isLoading?<div className="v2-empty" role="status">正在查询真实商家…<p>天气单独加载，不影响选餐。</p></div>:current?<article className="v2-restaurant"><div className="v2-restaurant-title"><div><span>{current.source} · {category.name}</span><h3>{current.name}</h3></div><span className={`v2-pill ${currentStatus?.hours.status==='open'?'good':''}`}>{currentStatus?.hours.status==='open'?'按时段预计可前往':'营业待核实'}</span></div>
+   <section className="v2-results" aria-label="附近真实餐厅"><div className="v2-section-heading"><div><span className="v2-step">02 · 把想吃的变成吃得到</span><h2>{nearbyState==='error'?'附近查询未完成':current?(confirmed?'这一顿，有着落了':finalPick?'这一顿，替你定一家':'附近这一家，怎么样？'):point?'先确认有合适的店':'真实商家，等你设置起点'}</h2></div>{point&&nearbyState==='success'&&<span className="v2-counter">{eligible.length} 家可考虑 / {restaurants.length} 家找到</span>}</div>
+    {nearbyState==='error'?<div className="v2-api-error" role="status"><p>{message}</p><p className="v2-caption">这不代表附近没有餐厅；上方的随机灵感仍可继续使用。</p><div><button className="v2-inline" onClick={()=>point&&loadNearby(point,constraints.radius)}>重试附近查询</button><a className="v2-inline" href={mapSearch} target="_blank" rel="noreferrer">去地图查询 ↗</a></div></div>:isLoading?<div className="v2-empty" role="status">正在查询真实商家…<p>天气单独加载，不影响选餐。</p></div>:current?<article className="v2-restaurant"><div className="v2-restaurant-title"><div><span>{current.source} · {category.name}</span><h3>{current.name}</h3></div><span className={`v2-pill ${currentStatus?.hours.status==='open'?'good':''}`}>{currentStatus?.hours.status==='open'?'按时段预计可前往':'营业待核实'}</span></div>
      <div className="v2-facts"><div><small>距离</small><strong>直线 {current.distance<1000?`${current.distance} m`:`${(current.distance/1000).toFixed(1)} km`}</strong></div><div><small>预算参考</small><strong>{current.price!==null?`人均约 ¥${current.price}`:'价格未知'}</strong></div><div><small>营业信息</small><strong>{current.openingHours||'时段未收录'}</strong></div></div>
      <p className="v2-explain">{constraints.preferred&&constraints.preferred!==direction?'偏好的品类暂未选中，这次替你换个方向。':'从符合当前条件的候选中随机选出，近一点的选择优先。'}{constraints.budget!==null&&current.price!==null&&current.price>constraints.budget?' 参考人均高于期望预算，未突破任何严格上限。':''}</p>
      <p className="v2-caution">{currentStatus?.hours.label}。距离按直线计算，步行时间仅估算；闭餐判断含点餐、等餐及堂食用餐余量，厨房可能提前停止接单。{current.price===null?' 当前没有价格依据，请先核实菜单。':' 参考人均不等于最终账单。'}</p>
