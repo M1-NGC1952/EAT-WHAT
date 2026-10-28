@@ -6,21 +6,33 @@ export type Restaurant = {
   sourceUrl: string; checkedAt: string; address: string; coordinateSystem: 'wgs84' | 'gcj02';
 };
 export const CATEGORIES = [
-  { id:'noodles', name:'面食', icon:'🍜', hint:'热乎一碗，把纠结留给昨天。', words:['noodle','ramen','面馆','面食','拉面','粉面','米粉','螺蛳粉','馄饨','饺子'] },
-  { id:'rice', name:'中式饭菜', icon:'🍚', hint:'一口饭，一口菜，简单又踏实。', words:['chinese','rice','中餐','中式','快餐','盖饭','湘菜','川菜','粤菜','小炒','炒饭','烧腊'] },
-  { id:'light', name:'轻食', icon:'🥗', hint:'今天，给午餐一点清爽。', words:['salad','sandwich','轻食','沙拉','三明治'] },
-  { id:'curry', name:'咖喱', icon:'🍛', hint:'浓郁一点，午休也有好心情。', words:['curry','咖喱','印度菜','indian'] },
-  { id:'japanese', name:'日式料理', icon:'🍱', hint:'把今天的午餐装进一份小满足。', words:['japanese','sushi','日式','日本','寿司'] },
-  { id:'korean', name:'韩式料理', icon:'🥘', hint:'换个口味，给普通的一天加点料。', words:['korean','韩式','韩国'] },
-  { id:'western', name:'汉堡或披萨', icon:'🍔', hint:'偶尔换一顿，午餐也有新鲜感。', words:['burger','pizza','italian','汉堡','披萨','意大利','西式'] },
-  { id:'hotpot', name:'火锅麻辣烫', icon:'🍲', hint:'热气腾腾，就是这一顿的期待。', words:['hot_pot','火锅','麻辣烫','冒菜','串串'] },
-  { id:'local', name:'附近餐饮', icon:'🥣', hint:'从真实找到的附近餐厅里，挑一个新选择。', words:[] as string[] },
+ {id:'noodles',name:'面条 / 米粉',icon:'🍜',hint:'热乎一碗，先替午餐定个方向。',query:'面馆|拉面|米粉|面条|螺蛳粉',words:['noodle','ramen','面馆','面条','拉面','粉面','米粉','螺蛳粉','拌面','刀削面','牛肉面','热干面','意面']},
+ {id:'dumplings',name:'饺子 / 馄饨',icon:'🥟',hint:'一份饺子或馄饨，简单又踏实。',query:'饺子|馄饨|水饺',words:['dumpling','wonton','饺子','水饺','馄饨','云吞']},
+ {id:'rice',name:'中式饭菜',icon:'🍚',hint:'一口饭，一口菜，今天就吃踏实一点。',query:'中餐|盖饭|小炒|炒饭',words:['chinese','rice','中餐','中式','盖饭','湘菜','川菜','粤菜','小炒','炒饭','烧腊','便当']},
+ {id:'light',name:'轻食',icon:'🥗',hint:'给午餐一点清爽。',query:'轻食|沙拉|三明治',words:['salad','sandwich','轻食','沙拉','三明治']},
+ {id:'curry',name:'咖喱',icon:'🍛',hint:'浓郁一点，换个午餐心情。',query:'咖喱|印度菜',words:['curry','咖喱','印度菜','indian']},
+ {id:'japanese',name:'日式料理',icon:'🍱',hint:'把午餐装进一份小满足。',query:'日式|日本料理|寿司',words:['japanese','sushi','日式','日本','寿司']},
+ {id:'korean',name:'韩式料理',icon:'🥘',hint:'换一种口味，少纠结一顿。',query:'韩式|韩国料理',words:['korean','韩式','韩国']},
+ {id:'burger',name:'汉堡',icon:'🍔',hint:'今天试试一份汉堡。',query:'汉堡|麦当劳|肯德基',words:['burger','汉堡','麦当劳','肯德基','mcdonald','kfc']},
+ {id:'pizza',name:'披萨',icon:'🍕',hint:'把午餐换成一块小期待。',query:'披萨|比萨',words:['pizza','披萨','比萨']},
+ {id:'hotpot',name:'火锅 / 麻辣烫',icon:'🍲',hint:'热气腾腾，也是一个午餐方向。',query:'火锅|麻辣烫|冒菜',words:['hot_pot','火锅','麻辣烫','冒菜','串串']},
+ {id:'local',name:'附近其他餐饮',icon:'🥣',hint:'这里只是餐饮地点，还没有具体品类依据。',query:'',words:[] as string[]},
 ];
-export const INSPIRATIONS = CATEGORIES.filter(c=>c.id!=='local');
-export function categoryOf(r: Pick<Restaurant,'cuisine'|'name'>) {
-  const text = `${r.cuisine} ${r.name}`.toLowerCase();
-  const specific=CATEGORIES.filter(c=>c.id!=='rice'&&c.id!=='local');
-  return specific.find(c=>c.words.some(w=>text.includes(w))) ?? CATEGORIES.find(c=>c.id==='rice'&&c.words.some(w=>text.includes(w))) ?? CATEGORIES[CATEGORIES.length-1];
+export const INSPIRATIONS=CATEGORIES.filter(c=>c.id!=='local');
+export function matchCategory(r:Pick<Restaurant,'cuisine'|'name'>,category:string){
+ const c=CATEGORIES.find(c=>c.id===category);if(!c||category==='local')return null;
+ const word=c.words.find(w=>r.cuisine.toLowerCase().includes(w));
+ if(word)return {kind:'classification',word,raw:r.cuisine,label:`地图分类包含“${word}”：${r.cuisine}。具体菜单仍需核实。`};
+ const nameWord=c.words.find(w=>r.name.toLowerCase().includes(w));
+ return nameWord?{kind:'name',word:nameWord,raw:r.name,label:`店名包含“${nameWord}”，可能符合这个方向；具体菜单请到地图或向商家核实。`}:null;
+}
+export function categoryOf(r:Pick<Restaurant,'cuisine'|'name'>){
+ return CATEGORIES.filter(c=>c.id!=='rice'&&c.id!=='local').find(c=>matchCategory(r,c.id))??CATEGORIES.find(c=>c.id==='rice'&&matchCategory(r,c.id))??CATEGORIES[CATEGORIES.length-1];
+}
+export function swapRestaurant(pool:Restaurant[],c:Constraints,seen:string[],currentId:string|null,random=Math.random){
+ const other=pool.filter(r=>r.id!==currentId);
+ const next=pickRestaurant(other,c,seen,random);
+ return next?{state:'changed' as const,restaurant:next}: {state:other.length?'exhausted' as const:'single' as const,restaurant:null};
 }
 export type Constraints = { budget: number | null; strictBudget: boolean; radius: number; mode: MealMode; preferred: string; excluded: string[] };
 export const DEFAULTS: Constraints = {budget:null, strictBudget:false, radius:1200, mode:'dine', preferred:'', excluded:[]};
