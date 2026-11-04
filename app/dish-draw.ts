@@ -1,6 +1,9 @@
+import { extraDishes } from './dish-catalog.ts';
+
 export type Dish = { name: string; group: string; icon: string };
 
 const dishes: Dish[] = [
+  ...extraDishes,
   { name: "牛肉面", group: "面粉", icon: "🍜" },
   { name: "番茄鸡蛋面", group: "面粉", icon: "🍜" },
   { name: "桂林米粉", group: "面粉", icon: "🍜" },
@@ -54,3 +57,4 @@ export function drawDish(recent: readonly Dish[], random = Math.random): Dish {
   // When the history covers the pool, bring back the oldest alternative.
   return recent.find(dish => dish.name !== current?.name) ?? dishes[0];
 }
+
