@@ -8,7 +8,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol = requestHeaders.get("x-forwarded-proto") ?? "https";
   const origin = host ? `${protocol}://${host}` : undefined;
   const title = "今天吃什么｜把午餐交给一点运气";
-  const description = "结合定位、天气与附近餐饮，为忙碌的上班族和学生快速决定今天的午餐。";
+  const description = "不知道吃什么？随机一道，看看有没有灵感。";
 
   return {
     title,
@@ -37,3 +37,4 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     </html>
   );
 }
+
